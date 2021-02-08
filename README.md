@@ -1,2 +1,3 @@
 # pgscripts
-Personal repository of useful scripts for PostgreSQL
+
+Personal repository of some scripts for PostgreSQL.

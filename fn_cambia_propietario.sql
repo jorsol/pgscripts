@@ -1,68 +1,105 @@
-﻿
-CREATE OR REPLACE FUNCTION fn_cambia_propietario(name, boolean, boolean) RETURNS void AS
+﻿CREATE OR REPLACE FUNCTION fn_change_owner(name, boolean = true, boolean = true) RETURNS void AS
 $BODY$
 DECLARE
-p_propietario ALIAS FOR $1;
+p_owner ALIAS FOR $1;
 p_debug ALIAS FOR $2;
 p_dryrun ALIAS FOR $3;
 v_i integer := 0;
 v_sql text;
 
 --#################################################################################################
---	CURSORES
+--	CURSORS
 --#################################################################################################
--- ESQUEMAS
-pesquemas CURSOR FOR
-	SELECT quote_ident(nspname) as nombre_esquema
-	FROM pg_namespace n
-	INNER JOIN pg_roles h on n.nspowner = h.oid AND h.rolname <> p_propietario
-	WHERE nspname NOT LIKE 'pg_%'
-	AND nspname NOT IN ('information_schema','symmetricds', 'symmetricds_central', 'symmetricdscentral')
-	ORDER BY 1 ASC;
--- TABLAS
-ptablas CURSOR FOR
-	SELECT quote_ident(schemaname) || '.' || quote_ident(tablename) as nombre_tabla FROM pg_tables
-	WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'symmetricds', 'symmetricds_central', 'symmetricdscentral')
-	AND schemaname NOT LIKE 'pg_%'
-	AND tablename NOT LIKE 'pg_%'
-	AND tableowner <> p_propietario
-	ORDER BY 1 ASC;
--- FUNCIONES
-pfunciones CURSOR FOR
-	SELECT quote_ident(b.nspname) || '.' || quote_ident(a.proname) || '(' || pg_catalog.oidvectortypes(a.proargtypes) || ')' as nombre_function 
-	FROM pg_proc a 
-	INNER JOIN pg_namespace b on a.pronamespace = b.oid 
-	INNER JOIN pg_roles h on a.proowner = h.oid AND h.rolname <> p_propietario
-	WHERE b.nspname NOT IN ('pg_catalog', 'information_schema', 'symmetricds', 'symmetricds_central', 'symmetricdscentral') AND proisagg = 'f'
-	AND a.proname not like 'fsym_%' AND a.proname not like 'dblink%' AND a.proname <> 'fn_cambia_propietario'
-	ORDER BY 1 ASC;
--- SECUENCIAS
-psecuencias CURSOR FOR
-	SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) as nombre_secuencia
-	FROM pg_class c
-	INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-	INNER JOIN pg_roles h on c.relowner = h.oid AND h.rolname <> p_propietario
-	WHERE c.relkind = 'S'
-	AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'symmetricds', 'symmetricds_central', 'symmetricdscentral')
-	ORDER BY 1 ASC;
 
--- TIPOS
+-- SCHEMAS
+pesquemas CURSOR FOR
+  SELECT quote_ident(n.nspname) AS schema_name
+  FROM pg_catalog.pg_namespace n
+  WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND pg_catalog.pg_get_userbyid(n.nspowner) <> p_owner
+  ORDER BY 1;
+
+-- TABLES
+ptablas CURSOR FOR
+	SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) as table_name
+	FROM pg_class c
+	  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+	WHERE c.relkind = 'r'
+  	AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND c.relname !~ '^pg_'
+    AND pg_catalog.pg_get_userbyid(c.relowner) <> p_owner
+	ORDER BY 1;
+
+pforeign CURSOR FOR
+	SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) as table_name
+	FROM pg_class c
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+	WHERE c.relkind = 'f'
+  	AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND c.relname !~ '^pg_'
+    AND pg_catalog.pg_get_userbyid(c.relowner) <> p_owner
+	ORDER BY 1;
+
+-- FUNCTIONS
+pfunciones CURSOR FOR
+	SELECT quote_ident(n.nspname) || '.' || quote_ident(p.proname) || '(' || pg_catalog.oidvectortypes(p.proargtypes) || ')' as function_name
+	FROM pg_proc p
+  	JOIN pg_namespace n on p.pronamespace = n.oid
+	WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND p.proname <> 'fn_change_owner'
+    AND pg_catalog.pg_get_userbyid(p.proowner) <> p_owner
+	ORDER BY 1;
+
+proutines CURSOR FOR
+	SELECT quote_ident(n.nspname) || '.' || quote_ident(p.proname) || '(' || pg_catalog.oidvectortypes(p.proargtypes) || ')' as function_name
+	FROM pg_proc p
+  	JOIN pg_namespace n on p.pronamespace = n.oid
+	WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND p.proname <> 'fn_change_owner'
+    AND pg_catalog.pg_get_userbyid(p.proowner) <> p_owner
+	ORDER BY 1;
+
+-- SEQUENCES
+psecuencias CURSOR FOR
+	SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) as sequence_name
+	FROM pg_class c
+	  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+	WHERE c.relkind = 'S'
+  	AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND c.relname !~ '^pg_'
+    AND pg_catalog.pg_get_userbyid(c.relowner) <> p_owner
+	ORDER BY 1;
+
+-- TYPES
 ptipos CURSOR FOR
-	SELECT quote_ident(n.nspname) || '.' || quote_ident(t.typname) as nombre_tipo
+	SELECT quote_ident(n.nspname) || '.' || quote_ident(t.typname) as type_name
 	FROM pg_type t
-	INNER JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
-	INNER JOIN pg_roles h on t.typowner = h.oid AND h.rolname <> p_propietario
-	WHERE (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid)) 
-	AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type el WHERE el.oid = t.typelem AND el.typarray = t.oid)
-	AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'symmetricds', 'symmetricds_central', 'symmetricdscentral') ORDER BY 1 ASC;
+	  JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+	WHERE (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid))
+  	AND NOT EXISTS(SELECT 1 FROM pg_catalog.pg_type el WHERE el.oid = t.typelem AND el.typarray = t.oid)
+	  AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND t.typname !~ '^pg_'
+    AND pg_catalog.pg_get_userbyid(t.typowner) <> p_owner
+  ORDER BY 1;
+
+-- VIEWS
+pvistas CURSOR FOR
+	SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) as view_name
+	FROM pg_class c
+	  JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+	WHERE c.relkind IN ('v', 'm')
+  	AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+    AND c.relname !~ '^pg_'
+    AND pg_catalog.pg_get_userbyid(c.relowner) <> p_owner
+	ORDER BY 1;
 
 BEGIN
 --#################################################################################################
---	COMPROBAR SI EXISTE EL LOGIN
+--	Check login name
 --#################################################################################################
-	IF NOT EXISTS (SELECT 1 FROM pg_user WHERE usename = p_propietario) THEN                     
-		RAISE EXCEPTION 'Login role no existente --> %', p_propietario
-			USING HINT = 'Por favor verifique el login e intente nuevamente.';
+	IF NOT EXISTS (SELECT 1 FROM pg_user WHERE usename = p_owner) THEN
+		RAISE EXCEPTION 'Login role does not exists --> %', p_owner
+			USING HINT = 'Please verify the login name and try again.';
 	END IF;
 
 --#################################################################################################
@@ -71,18 +108,18 @@ BEGIN
 	v_i = 0;
 	if (p_debug) THEN
 	RAISE NOTICE '###################################################';
-	RAISE NOTICE ' INICIANDO A CAMBIAR EL PROPIETARIO DE LOS ESQUEMAS';
+	RAISE NOTICE ' CHANGING OWNER OF SCHEMAS ';
 	RAISE NOTICE '###################################################';
 	END IF;
 	FOR resquema IN pesquemas LOOP
-		v_sql = 'ALTER SCHEMA ' || resquema.nombre_esquema || ' OWNER TO ' || quote_ident(p_propietario) || ';';
+		v_sql = 'ALTER SCHEMA ' || resquema.schema_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
 		if (p_debug) THEN RAISE NOTICE '%', v_sql; END IF;
 		if (p_dryrun = false) THEN EXECUTE v_sql; END IF;
 		v_i = v_i + 1;
 	END LOOP;
 	if (p_debug) THEN
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
-	RAISE NOTICE ' ESQUEMAS CON EL PROPIETARIO = % TOTAL = %', p_propietario, CAST(v_i AS VARCHAR);
+	RAISE NOTICE ' SCHEMAS WITH OWNER = % TOTAL = %', p_owner, CAST(v_i AS VARCHAR);
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
 	END IF;
 
@@ -92,18 +129,39 @@ BEGIN
 	v_i = 0;
 	if (p_debug) THEN
 	RAISE NOTICE '##################################################';
-	RAISE NOTICE ' INICIANDO A CAMBIAR EL PROPIETARIO DE LAS TABLAS';
+	RAISE NOTICE ' CHANGING OWNER OF TABLES';
 	RAISE NOTICE '##################################################';
 	END IF;
 	FOR rtables IN  ptablas LOOP
-		v_sql = 'ALTER TABLE ' || rtables.nombre_tabla || ' OWNER TO ' || quote_ident(p_propietario) || ';';
+		v_sql = 'ALTER TABLE ' || rtables.table_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
 		if (p_debug) THEN RAISE NOTICE '%', v_sql; END IF;
 		if (p_dryrun = false) THEN EXECUTE v_sql; END IF;
 		v_i = v_i + 1;
 	END LOOP;
 	if (p_debug) THEN
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
-	RAISE NOTICE ' TABLAS CON EL PROPIETARIO = % TOTAL = %', p_propietario, CAST(v_i AS VARCHAR);
+	RAISE NOTICE ' TABLES WITH OWNER = % TOTAL = %', p_owner, CAST(v_i AS VARCHAR);
+	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+	END IF;
+
+--#################################################################################################
+--	CAMBIAR EL PROPIETARIO A LAS TABLAS FORANEAS
+--#################################################################################################
+	v_i = 0;
+	if (p_debug) THEN
+	RAISE NOTICE '##################################################';
+	RAISE NOTICE ' CHANGING OWNER OF TABLES';
+	RAISE NOTICE '##################################################';
+	END IF;
+	FOR rtables IN  ptablas LOOP
+		v_sql = 'ALTER FOREIGN TABLE ' || rtables.table_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
+		if (p_debug) THEN RAISE NOTICE '%', v_sql; END IF;
+		if (p_dryrun = false) THEN EXECUTE v_sql; END IF;
+		v_i = v_i + 1;
+	END LOOP;
+	if (p_debug) THEN
+	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+	RAISE NOTICE ' TABLES WITH OWNER = % TOTAL = %', p_owner, CAST(v_i AS VARCHAR);
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
 	END IF;
 
@@ -113,18 +171,26 @@ BEGIN
 	v_i = 0;
 	if (p_debug) THEN
 	RAISE NOTICE '##################################################';
-	RAISE NOTICE ' INICIANDO A CAMBIAR EL PROPIETARIO DE LAS FUNCIONES';
+	RAISE NOTICE ' CHANGING OWNER OF FUNCTIONS ';
 	RAISE NOTICE '##################################################';
 	END IF;
 	FOR rfunction IN  pfunciones LOOP
-		v_sql = 'ALTER FUNCTION ' || rfunction.nombre_function || ' OWNER TO ' || quote_ident(p_propietario) || ';';
+		v_sql = 'ALTER FUNCTION ' || rfunction.function_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
 		if (p_debug) THEN RAISE NOTICE '%', v_sql; END IF;
-		if (p_dryrun = false) THEN EXECUTE v_sql; END IF;
+		if (p_dryrun = false) THEN
+      BEGIN
+        EXECUTE v_sql;
+        EXCEPTION
+        WHEN undefined_function THEN
+          v_sql = 'ALTER FUNCTION ' || rfunction.function_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
+          EXECUTE v_sql;
+      END;
+    END IF;
 		v_i = v_i + 1;
 	END LOOP;
 	if (p_debug) THEN
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
-	RAISE NOTICE ' FUNCIONES CON EL PROPIETARIO = % TOTAL = %', p_propietario, CAST(v_i AS VARCHAR);
+	RAISE NOTICE ' FUNCTIONS WITH OWNER = % TOTAL = %', p_owner, CAST(v_i AS VARCHAR);
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
 	END IF;
 
@@ -134,18 +200,18 @@ BEGIN
 	v_i = 0;
 	if (p_debug) THEN
 	RAISE NOTICE '##################################################';
-	RAISE NOTICE ' INICIANDO A CAMBIAR EL PROPIETARIO DE LAS SECUENCIAS';
+	RAISE NOTICE ' CHANGING OWNER OF SEQUENCES ';
 	RAISE NOTICE '##################################################';
 	END IF;
 	FOR rsecuencias IN  psecuencias LOOP
-		v_sql = 'ALTER SEQUENCE ' || rsecuencias.nombre_secuencia || ' OWNER TO ' || quote_ident(p_propietario) || ';'; 			   
+		v_sql = 'ALTER SEQUENCE ' || rsecuencias.sequence_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
 		if (p_debug) THEN RAISE NOTICE '%', v_sql; END IF;
 		if (p_dryrun = false) THEN EXECUTE v_sql; END IF;
 		v_i = v_i + 1;
 	END LOOP;
 	if (p_debug) THEN
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
-	RAISE NOTICE ' SECUENCIAS CON EL PROPIETARIO = % TOTAL = %', p_propietario, CAST(v_i AS VARCHAR);
+	RAISE NOTICE ' SEQUENCES WITH OWNER = % TOTAL = %', p_owner, CAST(v_i AS VARCHAR);
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
 	END IF;
 
@@ -155,26 +221,47 @@ BEGIN
 	v_i = 0;
 	if (p_debug) THEN
 	RAISE NOTICE '##################################################';
-	RAISE NOTICE ' INICIANDO A CAMBIAR EL PROPIETARIO DE LOS TIPOS';
+	RAISE NOTICE ' CHANGING OWNER OF TYPES ';
 	RAISE NOTICE '##################################################';
 	END IF;
-	FOR rtipos IN  ptipos LOOP                
-		v_sql = 'ALTER TYPE ' || rtipos.nombre_tipo || ' OWNER TO ' || quote_ident(p_propietario) || ';'; 			   
+	FOR rtipos IN  ptipos LOOP
+		v_sql = 'ALTER TYPE ' || rtipos.type_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
 		if (p_debug) THEN RAISE NOTICE '%', v_sql; END IF;
 		if (p_dryrun = false) THEN EXECUTE v_sql; END IF;
 		v_i = v_i + 1;
 	END LOOP;
 	if (p_debug) THEN
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
-	RAISE NOTICE '  TIPOS CON EL PROPIETARIO = % TOTAL = %', p_propietario, CAST(v_i AS VARCHAR);
+	RAISE NOTICE '  TYPES WITH OWNER = % TOTAL = %', p_owner, CAST(v_i AS VARCHAR);
 	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
 	END IF;
-	
+
+--#################################################################################################
+--  CAMBIAR EL PROPIETARIO A LAS VISTAS
+--#################################################################################################
+	v_i = 0;
+	if (p_debug) THEN
+	RAISE NOTICE '##################################################';
+	RAISE NOTICE ' CHANGING OWNER OF VIEWS ';
+	RAISE NOTICE '##################################################';
+	END IF;
+	FOR rvistas IN  pvistas LOOP
+		v_sql = 'ALTER VIEW ' || rvistas.view_name || ' OWNER TO ' || quote_ident(p_owner) || ';';
+		if (p_debug) THEN RAISE NOTICE '%', v_sql; END IF;
+		if (p_dryrun = false) THEN EXECUTE v_sql; END IF;
+		v_i = v_i + 1;
+	END LOOP;
+	if (p_debug) THEN
+	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+	RAISE NOTICE '  VIEWS WITH OWNER = % TOTAL = %', p_owner, CAST(v_i AS VARCHAR);
+	RAISE NOTICE '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@';
+	END IF;
+
 --####
 END;
 $BODY$
-  LANGUAGE 'plpgsql' VOLATILE
-  COST 100;
+  LANGUAGE 'plpgsql';
 
-SELECT fn_cambia_propietario('postgres', true, true);
-DROP FUNCTION IF EXISTS fn_cambia_propietario(name, boolean, boolean);
+SELECT fn_change_owner('ongres', true, true);
+DROP FUNCTION IF EXISTS fn_change_owner(name, boolean, boolean);
+
